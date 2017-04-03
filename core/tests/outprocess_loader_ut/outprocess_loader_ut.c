@@ -1,9 +1,21 @@
 // Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <stdbool.h>
+
+#define disableNegativeTest(x) (negative_tests_to_skip |= ((uint64_t)1 << (x)))
+#define enableNegativeTest(x) (negative_tests_to_skip &= ~((uint64_t)1 << (x)))
+#define skipNegativeTest(x) (negative_tests_to_skip & ((uint64_t)1 << (x)))
+
+#define MOCK_UV_LOOP (uv_loop_t *)0x09171979
+#define MOCK_UV_PROCESS (uv_process_t *)0x17091979
+#define MOCK_UV_PROCESS_VECTOR (VECTOR_HANDLE)0x19790917
+
+static size_t negative_test_index;
+static uint64_t negative_tests_to_skip;
 
 static bool malloc_will_fail = false;
 static size_t malloc_fail_count = 0;
@@ -45,12 +57,16 @@ void my_gballoc_free(void* ptr)
 #define ENABLE_MOCKS
 
 
-#include "azure_c_shared_utility/strings.h"
 #include "azure_c_shared_utility/gballoc.h"
-#include "azure_c_shared_utility/urlencode.h"
+#include "azure_c_shared_utility/strings.h"
+#include "azure_c_shared_utility/threadapi.h"
+#include "azure_c_shared_utility/tickcounter.h"
 #include "azure_c_shared_utility/uniqueid.h"
+#include "azure_c_shared_utility/urlencode.h"
+#include "azure_c_shared_utility/vector.h"
 
 #include "parson.h"
+#include "uv.h"
 #include "module_loader.h"
 
 #include  "control_message.h"
@@ -59,6 +75,19 @@ void my_gballoc_free(void* ptr)
 
 #include "module_loaders/outprocess_loader.h"
 #include "module_loaders/outprocess_module.h"
+
+#ifdef __cplusplus
+  extern "C" {
+#endif
+
+int launch_child_process_from_entrypoint(OUTPROCESS_LOADER_ENTRYPOINT * outprocess_entry);
+int spawn_child_processes(void * context);
+int update_entrypoint_with_launch_object(OUTPROCESS_LOADER_ENTRYPOINT * outprocess_entry, const JSON_Object * launch_object);
+int validate_launch_arguments(const JSON_Object * launch_object);
+
+#ifdef __cplusplus
+  }
+#endif
 
 static pfModuleLoader_Load OutprocessModuleLoader_Load = NULL;
 static pfModuleLoader_Unload OutprocessModuleLoader_Unload = NULL;
@@ -70,13 +99,32 @@ static pfModuleLoader_FreeConfiguration OutprocessModuleLoader_FreeConfiguration
 static pfModuleLoader_BuildModuleConfiguration OutprocessModuleLoader_BuildModuleConfiguration = NULL;
 static pfModuleLoader_FreeModuleConfiguration OutprocessModuleLoader_FreeModuleConfiguration = NULL;
 
+// ** Mocking parson.h
 MOCKABLE_FUNCTION(, void, json_free_serialized_string, char*, string);
+MOCKABLE_FUNCTION(, size_t, json_array_get_count, const JSON_Array*, array);
+MOCKABLE_FUNCTION(, const char*, json_array_get_string, const JSON_Array*, array, size_t, size);
 MOCKABLE_FUNCTION(, char*, json_serialize_to_string, const JSON_Value*, value);
+MOCKABLE_FUNCTION(, JSON_Array*, json_object_get_array, const JSON_Object*, object, const char*, name);
+MOCKABLE_FUNCTION(, JSON_Object*, json_object_get_object, const JSON_Object*, object, const char*, name);
 MOCKABLE_FUNCTION(, JSON_Value*, json_object_get_value, const JSON_Object*, object, const char*, name);
 MOCKABLE_FUNCTION(, const char*, json_object_get_string, const JSON_Object*, object, const char*, name);
 MOCKABLE_FUNCTION(, double, json_object_get_number, const JSON_Object*, object, const char*, name);
 MOCKABLE_FUNCTION(, JSON_Object*, json_value_get_object, const JSON_Value *, value);
 MOCKABLE_FUNCTION(, JSON_Value_Type, json_value_get_type, const JSON_Value*, value);
+
+// ** Mocking uv.h (Process handle)
+MOCK_FUNCTION_WITH_CODE(, int, uv_process_kill, uv_process_t *, handle, int, signum)
+MOCK_FUNCTION_END(0);
+MOCK_FUNCTION_WITH_CODE(, int, uv_spawn, uv_loop_t *, loop, uv_process_t *, handle, const uv_process_options_t *, options)
+MOCK_FUNCTION_END(0);
+
+// ** Mocking uv.h (Event loop)
+MOCK_FUNCTION_WITH_CODE(, uv_loop_t *, uv_default_loop);
+MOCK_FUNCTION_END(MOCK_UV_LOOP);
+MOCK_FUNCTION_WITH_CODE(, int, uv_loop_alive, const uv_loop_t *, loop);
+MOCK_FUNCTION_END(0);
+MOCK_FUNCTION_WITH_CODE(, int, uv_run, uv_loop_t *, loop, uv_run_mode, mode);
+MOCK_FUNCTION_END(0);
 
 //=============================================================================
 //Globals
@@ -112,6 +160,18 @@ STRING_HANDLE myURL_EncodeString(const char* textEncode)
 }
 
 //parson mocks
+
+MOCK_FUNCTION_WITH_CODE(, size_t, json_array_get_count, const JSON_Array*, array)
+MOCK_FUNCTION_END(0)
+
+MOCK_FUNCTION_WITH_CODE(, const char*, json_array_get_string, const JSON_Array*, array, size_t, size)
+MOCK_FUNCTION_END(NULL)
+
+MOCK_FUNCTION_WITH_CODE(, JSON_Array*, json_object_get_array, const JSON_Object*, object, const char*, name)
+MOCK_FUNCTION_END(NULL)
+
+MOCK_FUNCTION_WITH_CODE(, JSON_Object*, json_object_get_object, const JSON_Object*, object, const char*, name)
+MOCK_FUNCTION_END(NULL)
 
 MOCK_FUNCTION_WITH_CODE(, JSON_Object*, json_value_get_object, const JSON_Value*, value)
     JSON_Object* obj = NULL;
@@ -167,6 +227,47 @@ MOCK_FUNCTION_END(newString)
 
 TEST_DEFINE_ENUM_TYPE(MODULE_LOADER_TYPE, MODULE_LOADER_TYPE_VALUES);
 
+static
+void
+expected_calls_OutprocessLoader_SpawnChildProcesses(
+    void
+) {
+    enableNegativeTest(negative_test_index++);
+    STRICT_EXPECTED_CALL(ThreadAPI_Create(IGNORED_PTR_ARG, IGNORED_PTR_ARG, NULL))
+        .IgnoreArgument(1)
+        .IgnoreArgument(2)
+        .SetFailReturn(THREADAPI_ERROR)
+        .SetReturn(THREADAPI_OK);
+}
+
+static
+void
+expected_calls_launch_child_process_from_entrypoint (
+    void
+) {
+    enableNegativeTest(negative_test_index++);
+    STRICT_EXPECTED_CALL(VECTOR_create(sizeof(uv_process_t *)))
+        .SetFailReturn(NULL)
+        .SetReturn(MOCK_UV_PROCESS_VECTOR);
+    enableNegativeTest(negative_test_index++);
+    STRICT_EXPECTED_CALL(gballoc_malloc(sizeof(uv_process_t)))
+        .SetFailReturn(NULL)
+        .SetReturn(MOCK_UV_PROCESS);
+    enableNegativeTest(negative_test_index++);
+    STRICT_EXPECTED_CALL(VECTOR_push_back(MOCK_UV_PROCESS_VECTOR, IGNORED_PTR_ARG, 1))
+        .IgnoreArgument(2)
+        .SetFailReturn(__LINE__)
+        .SetReturn(0);
+    disableNegativeTest(negative_test_index++);
+    EXPECTED_CALL(uv_default_loop());
+    enableNegativeTest(negative_test_index++);
+    STRICT_EXPECTED_CALL(uv_spawn(MOCK_UV_LOOP, MOCK_UV_PROCESS, IGNORED_PTR_ARG))
+        .IgnoreArgument(2)
+        .IgnoreArgument(3)
+        .SetFailReturn(__LINE__)
+        .SetReturn(0);
+}
+
 BEGIN_TEST_SUITE(OutprocessLoader_UnitTests)
 
 TEST_SUITE_INITIALIZE(TestClassInitialize)
@@ -186,6 +287,12 @@ TEST_SUITE_INITIALIZE(TestClassInitialize)
     REGISTER_UMOCK_ALIAS_TYPE(JSON_Value_Type, int);
 	REGISTER_UMOCK_ALIAS_TYPE(MODULE_API_VERSION, int);
 	REGISTER_UMOCK_ALIAS_TYPE(UNIQUEID_RESULT, int);
+	REGISTER_UMOCK_ALIAS_TYPE(uv_loop_t *, void *);
+	REGISTER_UMOCK_ALIAS_TYPE(uv_process_t *, void *);
+    REGISTER_UMOCK_ALIAS_TYPE(THREAD_HANDLE, void *);
+    REGISTER_UMOCK_ALIAS_TYPE(TICK_COUNTER_HANDLE, void *);
+    REGISTER_UMOCK_ALIAS_TYPE(VECTOR_HANDLE, void *);
+
     REGISTER_GLOBAL_MOCK_FAIL_RETURN(json_value_get_object, NULL);
 
     // malloc/free hooks
@@ -294,7 +401,7 @@ TEST_FUNCTION(OutprocessModuleLoader_Load_returns_NULL_when_control_id_is_NULL)
 	ASSERT_IS_NULL(result);
 }
 
-/*Tests_SRS_OUTPROCESS_LOADER_17_003: [ If the entrypoint's activation_type is not NONE, the this function shall return NULL. ]*/
+/*Tests_SRS_OUTPROCESS_LOADER_27_003: [ If the entrypoint's `activation_type` is invalid, then `OutprocessModuleLoader_Load` shall return `NULL`. ]*/
 TEST_FUNCTION(OutprocessModuleLoader_Load_returns_NULL_when_activation_type_is_not_NONE)
 {
 	// arrange
@@ -316,8 +423,19 @@ TEST_FUNCTION(OutprocessModuleLoader_Load_returns_NULL_when_activation_type_is_n
 TEST_FUNCTION(OutprocessModuleLoader_Load_returns_NULL_when_things_fail)
 {
     // arrange
-	OUTPROCESS_LOADER_ENTRYPOINT entrypoint = { OUTPROCESS_LOADER_ACTIVATION_NONE, (STRING_HANDLE)0x42, (STRING_HANDLE)0x42, 0 };
-	MODULE_LOADER loader =
+    char * process_argv[] = {
+        "program.exe",
+        "control.id"
+    };
+    OUTPROCESS_LOADER_ENTRYPOINT entrypoint = {
+        OUTPROCESS_LOADER_ACTIVATION_NONE,
+        (STRING_HANDLE)0x42,
+        (STRING_HANDLE)0x42,
+        sizeof(process_argv),
+        process_argv,
+        0
+    };
+    MODULE_LOADER loader =
 	{
 		OUTPROCESS,
 		NULL, NULL, NULL
@@ -352,12 +470,24 @@ TEST_FUNCTION(OutprocessModuleLoader_Load_returns_NULL_when_things_fail)
 }
 
 /*Tests_SRS_OUTPROCESS_LOADER_17_004: [ The loader shall allocate memory for the loader handle. ]*/
+/*Codes_SRS_OUTPROCESS_LOADER_27_005: [ Launch - `OutprocessModuleLoader_Load` shall launch the child process identified by the entrypoint. ]*/
 /*Tests_SRS_OUTPROCESS_LOADER_17_006: [ The loader shall store the Outprocess_Module_API_all in the loader handle. ]*/
 /*Tests_SRS_OUTPROCESS_LOADER_17_007: [ Upon success, this function shall return a valid pointer to the loader handle. ]*/
 TEST_FUNCTION(OutprocessModuleLoader_Load_succeeds)
 {
     // arrange
-	OUTPROCESS_LOADER_ENTRYPOINT entrypoint = { OUTPROCESS_LOADER_ACTIVATION_NONE, (STRING_HANDLE)0x42, (STRING_HANDLE)0x42, 0 };
+    char * process_argv[] = {
+        "program.exe",
+        "control.id"
+    };
+    OUTPROCESS_LOADER_ENTRYPOINT entrypoint = {
+        OUTPROCESS_LOADER_ACTIVATION_NONE,
+        (STRING_HANDLE)0x42,
+        (STRING_HANDLE)0x42,
+        sizeof(process_argv),
+        process_argv,
+        0
+    };
 	MODULE_LOADER loader =
 	{
 		OUTPROCESS,
@@ -366,9 +496,7 @@ TEST_FUNCTION(OutprocessModuleLoader_Load_succeeds)
 
     umock_c_reset_all_calls();
 
-
-    STRICT_EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG))
-        .IgnoreArgument(1);
+    EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG));
 
     // act
     MODULE_LIBRARY_HANDLE result = OutprocessModuleLoader_Load(&loader, &entrypoint);
@@ -500,7 +628,7 @@ TEST_FUNCTION(OutprocessModuleLoader_ParseEntrypointFromJson_returns_NULL_when_j
 
 
 /*Tests_SRS_OUTPROCESS_LOADER_17_013: [ This function shall return NULL if "activation.type" is not present in json. ]*/
-TEST_FUNCTION(OutprocessModuleLoader_ParseEntrypointFromJson_returns_NULL_when_json_object_acitvation_type_NULL)
+TEST_FUNCTION(OutprocessModuleLoader_ParseEntrypointFromJson_returns_NULL_when_json_object_activation_type_NULL)
 {
     // arrange
 
@@ -515,7 +643,8 @@ TEST_FUNCTION(OutprocessModuleLoader_ParseEntrypointFromJson_returns_NULL_when_j
 		.SetReturn(activation_type);
 	STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "control.id"))
 		.SetReturn(control_id);
-	STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "message.id"))
+    STRICT_EXPECTED_CALL(json_object_get_object((JSON_Object*)0x43, "launch"));
+    STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "message.id"))
 		.SetReturn(NULL);
 
     // act
@@ -540,7 +669,8 @@ TEST_FUNCTION(OutprocessModuleLoader_ParseEntrypointFromJson_returns_NULL_when_j
 		.SetReturn(activation_type);
 	STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "control.id"))
 		.SetReturn(NULL);
-	STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "message.id"))
+    STRICT_EXPECTED_CALL(json_object_get_object((JSON_Object*)0x43, "launch"));
+    STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "message.id"))
 		.SetReturn(NULL);
 
 	// act
@@ -551,7 +681,7 @@ TEST_FUNCTION(OutprocessModuleLoader_ParseEntrypointFromJson_returns_NULL_when_j
 	ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
 }
 
-/*Tests_SRS_OUTPROCESS_LOADER_17_014: [ This function shall return NULL if "activation.type is not "NONE". ]*/
+/*Tests_SRS_OUTPROCESS_LOADER_27_014: [ This function shall return `NULL` if `activation.type` is `OUTPROCESS_LOADER_ACTIVATION_INVALID`. ]*/
 TEST_FUNCTION(OutprocessModuleLoader_ParseEntrypointFromJson_returns_NULL_when_json_object_type_not_none)
 {
 	// arrange
@@ -566,7 +696,8 @@ TEST_FUNCTION(OutprocessModuleLoader_ParseEntrypointFromJson_returns_NULL_when_j
 		.SetReturn(activation_type);
 	STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "control.id"))
 		.SetReturn(control_id);
-	STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "message.id"))
+    STRICT_EXPECTED_CALL(json_object_get_object((JSON_Object*)0x43, "launch"));
+    STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "message.id"))
 		.SetReturn(NULL);
 
 	// act
@@ -592,7 +723,8 @@ TEST_FUNCTION(OutprocessModuleLoader_ParseEntrypointFromJson_returns_NULL_when_m
 		.SetReturn(activation_type);
 	STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "control.id"))
 		.SetReturn(control_id);
-	STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "message.id"))
+    STRICT_EXPECTED_CALL(json_object_get_object((JSON_Object*)0x43, "launch"));
+    STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "message.id"))
 		.SetReturn(NULL);
 	STRICT_EXPECTED_CALL(gballoc_malloc(sizeof(OUTPROCESS_LOADER_ENTRYPOINT)))
 		.SetReturn(NULL);
@@ -622,11 +754,10 @@ TEST_FUNCTION(OutprocessModuleLoader_ParseEntrypointFromJson_returns_NULL_when_u
 		.SetReturn(activation_type);
 	STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "control.id"))
 		.SetReturn(control_id);
-	STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "message.id"))
+    STRICT_EXPECTED_CALL(json_object_get_object((JSON_Object*)0x43, "launch"));
+    STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "message.id"))
 		.SetReturn(NULL);
 	STRICT_EXPECTED_CALL(gballoc_malloc(sizeof(OUTPROCESS_LOADER_ENTRYPOINT)));
-	STRICT_EXPECTED_CALL(json_object_get_number((JSON_Object*)0x43, "timeout"))
-		.SetReturn(0);
 	STRICT_EXPECTED_CALL(URL_EncodeString(control_id))
 		.SetReturn(NULL);
 	STRICT_EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG))
@@ -662,12 +793,13 @@ TEST_FUNCTION(OutprocessModuleLoader_ParseEntrypointFromJson_succeeds)
 		.SetReturn(activation_type);
 	STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "control.id"))
 		.SetReturn(control_id);
-	STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "message.id"))
+    STRICT_EXPECTED_CALL(json_object_get_object((JSON_Object*)0x43, "launch"));
+    STRICT_EXPECTED_CALL(json_object_get_string((JSON_Object*)0x43, "message.id"))
 		.SetReturn(NULL);
 	STRICT_EXPECTED_CALL(gballoc_malloc(sizeof(OUTPROCESS_LOADER_ENTRYPOINT)));
+	STRICT_EXPECTED_CALL(URL_EncodeString(control_id));
 	STRICT_EXPECTED_CALL(json_object_get_number((JSON_Object*)0x43, "timeout"))
 		.SetReturn(2000);
-	STRICT_EXPECTED_CALL(URL_EncodeString(control_id));
 	STRICT_EXPECTED_CALL(URL_EncodeString(NULL));
 
 	// act
@@ -1025,6 +1157,61 @@ TEST_FUNCTION(OutprocessLoader_Get_succeeds)
     ASSERT_IS_NOT_NULL(loader);
     ASSERT_ARE_EQUAL(MODULE_LOADER_TYPE, loader->type, OUTPROCESS);
     ASSERT_IS_TRUE(strcmp(loader->name, "outprocess") == 0);
+}
+
+TEST_FUNCTION(OutprocessLoader_SpawnChildProcesses_SCENARIO_success)
+{
+    // Arrange
+    int result;
+
+    // Expected call listing
+    umock_c_reset_all_calls();
+    expected_calls_OutprocessLoader_SpawnChildProcesses();
+
+    // Act
+    result = launch_child_process_from_entrypoint(&entrypoint);
+
+    // Assert
+    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
+
+    // Cleanup
+    OutprocessLoader_JoinChildProcesses();
+}
+
+/* Tests_SRS_OUTPROCESS_LOADER_27_069: [ `launch_child_process_from_entrypoint` shall attempt to create a vector for child processes(unless previously created), by calling `VECTOR_HANDLE VECTOR_create(size_t elementSize)` using `sizeof(uv_process_t *)` as `elementSize`. ]*/
+/* Tests_SRS_OUTPROCESS_LOADER_27_071: [ `launch_child_process_from_entrypoint` shall allocate the memory for the child handle, by calling `void * malloc(size_t _Size)` passing `sizeof(uv_process_t)` as `_Size`. ] */
+/* Tests_SRS_OUTPROCESS_LOADER_27_073: [ `launch_child_process_from_entrypoint` shall store the child's handle, by calling `int VECTOR_push_back(VECTOR_HANDLE handle, const void * elements, size_t numElements)` passing the process vector as `handle` the pointer to the newly allocated memory for the process context as `elements` and 1 as `numElements`. ]*/
+/* Tests_SRS_OUTPROCESS_LOADER_27_075: [ `launch_child_process_from_entrypoint` shall enqueue the child process to be spawned, by calling `int uv_spawn(uv_loop_t * loop, uv_process_t * handle, const uv_process_options_t * options)` passing the result of `uv_default_loop()` as `loop`, the newly allocated process handle as `handle`. ] */
+TEST_FUNCTION(launch_child_process_from_entrypoint_SCENARIO_success)
+{
+    // Arrange
+    int result;
+
+    char * process_argv[] = {
+        "program.exe",
+        "control.id"
+    };
+    OUTPROCESS_LOADER_ENTRYPOINT entrypoint = {
+        OUTPROCESS_LOADER_ACTIVATION_LAUNCH,
+        NULL,
+        NULL,
+        sizeof(process_argv),
+        process_argv,
+        0
+    };
+
+    // Expected call listing
+    umock_c_reset_all_calls();
+    expected_calls_launch_child_process_from_entrypoint();
+
+    // Act
+    result = launch_child_process_from_entrypoint(&entrypoint);
+
+    // Assert
+    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
+
+    // Cleanup
+    OutprocessLoader_JoinChildProcesses();
 }
 
 END_TEST_SUITE(OutprocessLoader_UnitTests);
