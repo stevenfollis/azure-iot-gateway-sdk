@@ -186,7 +186,7 @@ Gateway_Destroy destroys a gateway represented by the `gw` parameter.
 
 **SRS_GATEWAY_14_037: [** If `GATEWAY_HANDLE_DATA`'s message broker cannot remove a module, the function shall log the error and continue removing modules from the `GATEWAY_HANDLE`. **]**
 
-**SRS_GATEWAY_27_040: [** *Launch* - This function shall join any spawned threads. **]**
+**SRS_GATEWAY_27_040: [** *Launch* - `Gateway_Destroy` shall join any spawned threads. **]**
 
 **SRS_GATEWAY_14_006: [** The function shall destroy the `GATEWAY_HANDLE_DATA`'s `broker` `BROKER_HANDLE`. **]**
 

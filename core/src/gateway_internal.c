@@ -314,7 +314,7 @@ void gateway_destroy_internal(GATEWAY_HANDLE gw)
 
             VECTOR_destroy(gateway_handle->modules);
 #ifdef OUTPROCESS_ENABLED
-            /*Codes_SRS_GATEWAY_27_040: [ Launch - This function shall join any spawned threads. ]*/
+            /*Codes_SRS_GATEWAY_27_040: [ Launch - `Gateway_Destroy` shall join any spawned threads. ]*/
             OutprocessLoader_JoinChildProcesses();
 #endif
         }

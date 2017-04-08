@@ -249,43 +249,43 @@ OutprocessLoader_JoinChildProcesses
 void OutprocessLoader_JoinChildProcesses(void);
 ```
 
-**SRS_OUTPROCESS_LOADER_27_050: [** *Prerequisite Check* - If no processes are running, then `OutprocessLoader_JoinChildProcesses` shall return immediately. **]**
+**SRS_OUTPROCESS_LOADER_27_050: [** *Prerequisite Check* - If no threads are running, then `OutprocessLoader_JoinChildProcesses` shall abandon the effort to join the child processes immediately. **]**
+
+**SRS_OUTPROCESS_LOADER_27_064: [** `OutprocessLoader_JoinChildProcesses` shall get the count of child processes, by calling `size_t VECTOR_size(VECTOR_HANDLE handle)`. **]**
+
+**SRS_OUTPROCESS_LOADER_27_063: [** If no processes are running, then `OutprocessLoader_JoinChildProcesses` shall immediately join the child process management thread. **]**
 
 **SRS_OUTPROCESS_LOADER_27_051: [** `OutprocessLoader_JoinChildProcesses` shall create a timer to test for timeout, by calling `TICK_COUNTER_HANDLE tickcounter_create(void)`. **]**
 
-**SRS_OUTPROCESS_LOADER_27_052: [** If unable to create a timer, `OutprocessLoader_JoinChildProcesses` shall return immediately. **]**
+**SRS_OUTPROCESS_LOADER_27_052: [** If unable to create a timer, `OutprocessLoader_JoinChildProcesses` shall abandon awaiting the grace period. **]**
 
 **SRS_OUTPROCESS_LOADER_27_053: [** `OutprocessLoader_JoinChildProcesses` shall mark the begin time, by calling `int tickcounter_get_current_ms(TICK_COUNTER_HANDLE tick_counter, tickcounter_ms_t * current_ms)` using the handle called by the previous call to `tickcounter_create`. **]**
 
-**SRS_OUTPROCESS_LOADER_27_054: [** If unable to mark the begin time, `OutprocessLoader_JoinChildProcesses` shall return immediately. **]**
+**SRS_OUTPROCESS_LOADER_27_054: [** If unable to mark the begin time, `OutprocessLoader_JoinChildProcesses` shall abandon awaiting the grace period. **]**
 
 **SRS_OUTPROCESS_LOADER_27_055: [** While awaiting the grace period, `OutprocessLoader_JoinChildProcesses` shall mark the current time, by calling `int tickcounter_get_current_ms(TICK_COUNTER_HANDLE tick_counter, tickcounter_ms_t * current_ms)` using the handle called by the previous call to `tickcounter_create`. **]**
 
-**SRS_OUTPROCESS_LOADER_27_056: [** If unable to mark the current time, `OutprocessLoader_JoinChildProcesses` shall return immediately. **]**
+**SRS_OUTPROCESS_LOADER_27_056: [** If unable to mark the current time, `OutprocessLoader_JoinChildProcesses` shall abandon awaiting the grace period. **]**
 
 **SRS_OUTPROCESS_LOADER_27_057: [** While awaiting the grace period, `OutprocessLoader_JoinChildProcesses` shall check if the processes are running, by calling `int uv_loop_alive(const uv_loop_t * loop)` using the result of `uv_default_loop()` for `loop`. **]**
 
-**SRS_OUTPROCESS_LOADER_27_058: [** `OutprocessLoader_JoinChildProcesses` shall await the grace period in 100ms increments, by calling `void ThreadAPI_Sleep(unsigned int milliseconds)` passing 100 for `milliseconds`. **]**
+**SRS_OUTPROCESS_LOADER_27_059: [** If the child processes are not running, `OutprocessLoader_JoinChildProcesses` shall shall immediately join the child process management thread. **]**
 
-**SRS_OUTPROCESS_LOADER_27_059: [** If the grace period expired, `OutprocessLoader_JoinChildProcesses` shall get the count of child processes, by calling `size_t VECTOR_size(VECTOR_HANDLE handle)`. **]**
+**SRS_OUTPROCESS_LOADER_27_058: [** `OutprocessLoader_JoinChildProcesses` shall await the grace period in 100ms increments, by calling `void ThreadAPI_Sleep(unsigned int milliseconds)` passing 100 for `milliseconds`. **]**
 
 **SRS_OUTPROCESS_LOADER_27_060: [** If the grace period expired, `OutprocessLoader_JoinChildProcesses` shall get the handle of each child processes, by calling `void * VECTOR_element(VECTOR_HANDLE handle, size_t index)`. **]**
 
 **SRS_OUTPROCESS_LOADER_27_061: [** If the grace period expired, `OutprocessLoader_JoinChildProcesses` shall signal each child, by calling `int uv_process_kill(uv_process_t * process, int signum)` passing `SIGTERM` for `signum`. **]**
 
+**SRS_OUTPROCESS_LOADER_27_068: [** `OutprocessLoader_JoinChildProcesses` shall destroy the timer, by calling `void tickcounter_destroy(TICK_COUNTER_HANDLE tick_counter)`. **]**
+
 **SRS_OUTPROCESS_LOADER_27_062: [** `OutprocessLoader_JoinChildProcesses` shall join the child process management thread, by calling `THREADAPI_RESULT ThreadAPI_Join(THREAD_HANDLE threadHandle, int * res)`. **]**
-
-**SRS_OUTPROCESS_LOADER_27_063: [** `OutprocessLoader_JoinChildProcesses` shall return the resulting thread result to the parent thread, by calling `void ThreadAPI_Exit(int res)` using the value returned from `uv_run` as `res`. **]**
-
-**SRS_OUTPROCESS_LOADER_27_064: [** `OutprocessLoader_JoinChildProcesses` shall get the count of child processes, by calling `size_t VECTOR_size(VECTOR_HANDLE handle)`. **]**
 
 **SRS_OUTPROCESS_LOADER_27_065: [** `OutprocessLoader_JoinChildProcesses` shall get the handle of each child processes, by calling `void * VECTOR_element(VECTOR_HANDLE handle, size_t index)`. **]**
 
 **SRS_OUTPROCESS_LOADER_27_066: [** `OutprocessLoader_JoinChildProcesses` shall free the resources allocated to each child, by calling `void free(void * _Block)` passing the child handle as `_Block`. **]**
 
 **SRS_OUTPROCESS_LOADER_27_067: [** `OutprocessLoader_JoinChildProcesses` shall destroy the vector of child processes, by calling `void VECTOR_destroy(VECTOR_HANDLE handle)`. **]**
-
-**SRS_OUTPROCESS_LOADER_27_068: [** `OutprocessLoader_JoinChildProcesses` shall destroy the timer, by calling `void tickcounter_destroy(TICK_COUNTER_HANDLE tick_counter)`. **]**
 
 
 launch_child_process_from_entrypoint (*internal*)
@@ -294,6 +294,8 @@ launch_child_process_from_entrypoint (*internal*)
 ```C
 int launch_child_process_from_entrypoint (OUTPROCESS_LOADER_ENTRYPOINT * outprocess_entry);
 ```
+
+**SRS_OUTPROCESS_LOADER_27_098: [** *Prerequisite Check* If a vector for child processes already exists, then `launch_child_process_from_entrypoint` shall not attempt to recreate the vector. **]**
 
 **SRS_OUTPROCESS_LOADER_27_069: [** `launch_child_process_from_entrypoint` shall attempt to create a vector for child processes (unless previously created), by calling `VECTOR_HANDLE VECTOR_create(size_t elementSize)` using `sizeof(uv_process_t *)` as `elementSize`. **]**
 
@@ -311,7 +313,7 @@ int launch_child_process_from_entrypoint (OUTPROCESS_LOADER_ENTRYPOINT * outproc
 
 **SRS_OUTPROCESS_LOADER_27_076: [** If unable to enqueue the child process, then `launch_child_process_from_entrypoint` shall remove the stored handle, free the memory allocated to the child process handle and return a non-zero value. **]**
 
-**SRS_OUTPROCESS_LOADER_27_077: [** `launch_child_process_from_entrypoint` shall launch the enqueued child processes. **]**
+**SRS_OUTPROCESS_LOADER_27_077: [** `launch_child_process_from_entrypoint` shall spawn the enqueued child processes. **]**
 
 **SRS_OUTPROCESS_LOADER_27_078: [** If launching the enqueued child processes fails, then `launch_child_process_from_entrypoint` shall return a non-zero value. **]**
 
@@ -327,6 +329,8 @@ int spawn_child_processes (void * context);
 
 **SRS_OUTPROCESS_LOADER_27_080: [** `spawn_child_processes` shall start the child process management thread, by calling `int uv_run(uv_loop_t * loop, uv_run_mode mode)` passing the result of `uv_default_loop()` for `loop` and `UV_RUN_DEFAULT` for `mode`. **]**
 
+**SRS_OUTPROCESS_LOADER_27_099: [** `spawn_child_processes` shall return the result of the child process management thread to the parent thread, by calling `void ThreadAPI_Exit(int res)` passing the result of `uv_run()` as `res`. **]**
+
 **SRS_OUTPROCESS_LOADER_27_081: [** If no errors are encountered, then `spawn_child_processes` shall return zero. **]**
 
 
@@ -334,7 +338,7 @@ update_entrypoint_with_launch_object (*internal*)
 --------------------------------------------------------------
 
 ```C
-int update_entrypoint_with_launch_path_and_parameters(OUTPROCESS_LOADER_ENTRYPOINT * outprocess_entry, const char * launch_path, JSON_Array * launch_args)
+int update_entrypoint_with_launch_object (OUTPROCESS_LOADER_ENTRYPOINT * outprocess_entry, const char * launch_path, JSON_Array * launch_args)
 ```
 
 **SRS_OUTPROCESS_LOADER_27_082: [** `update_entrypoint_with_launch_object` shall retrieve the file path, by calling `const char * json_object_get_string(const JSON_Object * object, const char * name)` passing `path` as `name`. **]**
@@ -365,7 +369,7 @@ validate_launch_arguments (*internal*)
 --------------------------------------
 
 ```C
-int validate_launch_arguments(const JSON_Object * launch_object);
+int validate_launch_arguments (const JSON_Object * launch_object);
 ```
 
 **SRS_OUTPROCESS_LOADER_27_093: [** `validate_launch_arguments` shall retrieve the file path, by calling `const char * json_object_get_string(const JSON_Object * object, const char * name)` passing `path` as `name`. **]**

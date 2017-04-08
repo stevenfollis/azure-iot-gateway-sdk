@@ -1702,7 +1702,7 @@ TEST_FUNCTION(Gateway_Destroy_Continues_Unloading_If_Broker_RemoveModule_Fails)
 /*Tests_SRS_GATEWAY_14_006: [ The function shall destroy the GATEWAY_HANDLE_DATA's broker BROKER_HANDLE. ]*/
 /*Tests_SRS_GATEWAY_04_014: [ The function shall remove each link in GATEWAY_HANDLE_DATA's links vector and destroy GATEWAY_HANDLE_DATA's link. ]*/
 /*Tests_SRS_GATEWAY_17_019: [ The function shall destroy the module loader list. ]*/
-/*Tests_SRS_GATEWAY_27_040: [ Launch - This function shall join any spawned threads. ]*/
+/*Tests_SRS_GATEWAY_27_040: [ Launch - `Gateway_Destroy` shall join any spawned threads. ]*/
 TEST_FUNCTION(Gateway_Destroy_Removes_All_Modules_And_Destroys_Vector_Success)
 {
     //Arrange
