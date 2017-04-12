@@ -83,7 +83,7 @@ FROM debian:jessie-slim
     ENV COMMIT_ID master
 
     # start command
-    ENTRYPOINT  rm -rf /gateway \
+    RUN  rm -rf /gateway \
                 && git clone ${GATEWAY_REPO} /gateway \
                 && git -C /gateway checkout ${COMMIT_ID} \
                 && git -C /gateway submodule update --init \
@@ -91,5 +91,4 @@ FROM debian:jessie-slim
                     --run-unittests \
                     --enable-java-binding \
                     --enable-dotnet-core-binding \
-                    --enable-nodejs-binding \
-                && bash
+                    --enable-nodejs-binding
